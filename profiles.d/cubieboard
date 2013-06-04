@@ -1,0 +1,32 @@
+our @EXPORT_OK = qw/rootfs/;
+$arch = 'armv7h';
+
+sub rootfs {
+    my $archlinux = download "http://archlinuxarm.org/os/ArchLinuxARM-sun4i-latest.tar.gz";
+    my $kernel = download "http://dl.linux-sunxi.org/users/amery/sunxi-3.0/latest/cubieboard_hwpack.tar.xz";
+    rmtree $target if -e $target;
+    mkpath $target;
+    if( $device ) {
+        confess "todo: format and do all stuff on $device";
+        #mount $device, $target;
+    }
+    decompress $archlinux, $target;
+    pacman qw/-R linux-headers-sun4i linux-sun4i mkinitcpio mkinitcpio-busybox uboot-mkimage/;
+    symlink '.', "$target/rootfs";
+    symlink 'boot', "$target/kernel";
+    decompress $kernel, $target;
+    if( $device ) {
+        #umount $target;
+    }
+}
+
+sub base_install {
+    pacman qw/-S pulseaudio/;
+}
+
+sub all {
+    rootfs;
+    upgrade;
+}
+
+# vim:filetype=perl:
