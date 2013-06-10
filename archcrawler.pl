@@ -6,6 +6,7 @@ use warnings;
 use Carp;
 use Getopt::Long;
 use POSIX qw/strftime/;
+use Fcntl ':seek';
 use LWP::UserAgent;
 use base qw/File::Path File::Copy/;
 
@@ -19,6 +20,7 @@ our $device;
 our $target = 'target';
 our $verbose;
 our $arch = `uname -m`;
+my $tmp = "/tmp";
 
 our $ua = LWP::UserAgent->new;
 
@@ -178,6 +180,43 @@ sub mv {
     }
 }
 
+sub ln {
+    symlink $_[0], $_[1] or die "error: can not link $_[0] to $_[1]\n";
+}
+
+sub dd {
+    my %o = (@_);
+    $o{bs} = 512 unless $o{bs};
+    $o{skip} = 0 unless $o{skip};
+    $o{seek} = 0 unless $o{seek};
+    $o{skip} *= $o{bs};
+    $o{seek} *= $o{bs};
+    $o{limit} = $o{limit} * $o{bs} - 1;
+    open(my $in,'<',$o{if}) or die $!;
+    binmode $in or die "error: can not read $o{if}: $!\n";
+    open(my $out,(-f $o{of}?'+<':'>'),$o{of}) or die $!;
+    binmode $out or die "error: can write on $o{of}: $!\n";
+    seek $in,$o{skip},SEEK_SET;
+    seek $out,$o{seek},SEEK_SET;
+
+    my $size = $o{bs};
+    my $buf;
+    while( not eof $in and (not defined $o{limit} or tell $out < $o{limit}) ) {
+        if( $o{limit} ) {
+            my $max = $o{limit} - tell $out;
+            if( $max < $o{bs} ) {
+                $size = $max;
+                carp "uh oh, I tried to write too far" unless $o{nowarn};
+            }
+        }
+        read $in,$buf,$size;
+        print $out $buf;
+    }
+
+    close $in;
+    close $out;
+}
+
 sub generate_pacman_conf {
     return if -f "pacman.conf";
     open IN,"$target/etc/pacman.conf"
@@ -185,10 +224,12 @@ sub generate_pacman_conf {
     open OUT,">pacman.conf" or die "error: can not create pacman.conf: $!\n";
     while( <IN> ) {
         s!/etc/pacman\.d/mirrorlist!$target$&!;
+        s/^\s*#// if s!(CacheDir\s*=\s*)(.+?)\s+$!$1cache!;
         print OUT $_;
     }
     close OUT;
     close IN;
+    mkdir 'cache';
 }
 
 sub pacman {

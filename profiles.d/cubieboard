@@ -1,32 +1,125 @@
-our @EXPORT_OK = qw/rootfs/;
+our @EXPORT_OK = qw/boot restore rootfs check fixes/;
 $arch = 'armv7h';
 
+my %files = (
+        archlinux => "http://archlinuxarm.org/os/ArchLinuxARM-sun4i-latest.tar.gz",
+        kernel => "http://dl.linux-sunxi.org/users/amery/sunxi-3.0/latest/cubieboard_hwpack.tar.xz",
+        bootloader => "http://archlinuxarm.org/os/sun4i/cubieboard-bootloader.tar.gz",
+    );
+
+my $bootloader;
+my $archlinux;
+my $kernel;
+
+sub boot {
+    die "error: make device bootable needs a path to a device" unless $device;
+    $bootloader = download $files{bootloader};
+    decompress $bootloader, $tmp;
+    # Backup
+    dd(
+            if => $device,
+            of => "boot.bak",
+            skip => 1,
+            nowarn => 1, # we expect to go too far
+            limit => 2048, # sector 2048 not included
+        );
+    # Purge the white space after the MBR until the first partion
+    dd(
+            if => "/dev/zero",
+            of => $device,
+            seek => 1,
+            nowarn => 1, # we expect to go too far
+            limit => 2048, # sector 2048 not included
+        );
+    # Copy the SPL
+    dd(
+            if => "$tmp/cubieboard/sunxi-spl.bin",
+            of => $device,
+            bs => 1024,
+            seek => 8,
+            limit => 1024, # sector 2048 not included
+        );
+    # Copy u-boot
+    dd(
+            if => "$tmp/cubieboard/u-boot.bin",
+            of => $device,
+            bs => 1024,
+            seek => 32,
+            limit => 1024, # sector 2048 not included
+        );
+}
+
+sub restore {
+    die "error: make device bootable needs a path to a device" unless $device;
+    die "error: backup file is missing" unless -e "boot.bak";
+    dd(
+            if => "boot.bak",
+            of => $device,
+            seek => 1,
+            nowarn => 1, # we expect to go too far
+            limit => 2048, # sector 2048 not included
+        );
+}
+
 sub rootfs {
-    my $archlinux = download "http://archlinuxarm.org/os/ArchLinuxARM-sun4i-latest.tar.gz";
-    my $kernel = download "http://dl.linux-sunxi.org/users/amery/sunxi-3.0/latest/cubieboard_hwpack.tar.xz";
+    $archlinux = download $files{archlinux};
+    $kernel = download $files{kernel};
     rmtree $target if -e $target;
     mkpath $target;
     if( $device ) {
-        confess "todo: format and do all stuff on $device";
+        confess "todo: should mount $device";
         #mount $device, $target;
     }
     decompress $archlinux, $target;
     pacman qw/-R linux-headers-sun4i linux-sun4i mkinitcpio mkinitcpio-busybox uboot-mkimage/;
-    symlink '.', "$target/rootfs";
-    symlink 'boot', "$target/kernel";
+    ln '.', "$target/rootfs";
+    ln 'boot', "$target/kernel";
     decompress $kernel, $target;
+    open(my $boot_cmd, '>', "$target/boot/boot.cmd")
+        or confess $!;
+    print $boot_cmd <<EOF;
+setenv bootargs console=tty0 console=ttyS0,115200 hdmi.audio=EDID:0 root=/dev/mmcblk0p1 rootwait panic=10 init=/usr/lib/systemd/systemd
+ext2load mmc 0 0x43000000 boot/script.bin
+ext2load mmc 0 0x48000000 boot/uImage
+bootm 0x48000000
+EOF
     if( $device ) {
         #umount $target;
     }
 }
 
-sub base_install {
-    pacman qw/-S pulseaudio/;
+sub fixes {
+    rmtree "$target/bin" if -e "$target/bin";
+    rmtree "$target/sbin" if -e "$target/sbin";
+    rmtree "$target/usr/sbin" if -e "$target/usr/sbin";
+}
+
+sub base {
+    pacman qw/-S pulseaudio pulseaudio-alsa/;
+}
+
+sub x {
+    pacman qw/-S pulseaudio pulseaudio-alsa xorg-xset xorg-xsetroot xorg-xinit/;
+}
+
+sub dev {
+    pacman qw/-S vim/;
+    pacman qw/-R vi/;
+    ln "vim", "$target/usr/bin/vi";
 }
 
 sub all {
+    #boot;
     rootfs;
+    fixes;
     upgrade;
+    base;
+    x;
+    dev;
+}
+
+sub check {
+    pacman qw(-Qqo /bin /sbin /usr/sbin);
 }
 
 # vim:filetype=perl:
