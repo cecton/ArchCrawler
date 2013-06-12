@@ -1,4 +1,7 @@
-our @EXPORT_OK = qw/boot restore rootfs check fixes/;
+our @EXPORT_OK = qw/boot restore rootfs fixes base x dev u_boot/;
+# using qemu seems to be useless... with --debug parameter, the number of
+# failed execv is still the same
+#@pacman = (qw/qemu-arm -E/, "LD_LIBRARY_PATH=$target/usr/lib", "$target/usr/lib/ld-linux.so.3", "$target/usr/bin/pacman") unless $arch =~ m/arm/;
 $arch = 'armv7h';
 
 my %files = (
@@ -64,34 +67,46 @@ sub restore {
 sub rootfs {
     $archlinux = download $files{archlinux};
     $kernel = download $files{kernel};
-    rmtree $target if -e $target;
-    mkpath $target;
+    mkdir $target;
+    rmtree "$target/*" if -e $target;
     if( $device ) {
         confess "todo: should mount $device";
         #mount $device, $target;
     }
     decompress $archlinux, $target;
+    convert_links "$target/usr/lib";
     pacman qw/-R linux-headers-sun4i linux-sun4i mkinitcpio mkinitcpio-busybox uboot-mkimage/;
     ln '.', "$target/rootfs";
     ln 'boot', "$target/kernel";
     decompress $kernel, $target;
-    open(my $boot_cmd, '>', "$target/boot/boot.cmd")
-        or confess $!;
-    print $boot_cmd <<EOF;
-setenv bootargs console=tty0 console=ttyS0,115200 hdmi.audio=EDID:0 root=/dev/mmcblk0p1 rootwait panic=10 init=/usr/lib/systemd/systemd
-ext2load mmc 0 0x43000000 boot/script.bin
-ext2load mmc 0 0x48000000 boot/uImage
-bootm 0x48000000
-EOF
     if( $device ) {
         #umount $target;
     }
 }
 
+sub u_boot {
+    rmtree "$target/boot/boot.scr*";
+    open BOOT, '>', "$target/boot/boot.cmd" or confess $!;
+    print BOOT <<EOF;
+setenv bootargs console=tty0 console=ttyS0,115200 hdmi.audio=EDID:0 root=/dev/mmcblk0p1 rootwait panic=10 init=/usr/lib/systemd/systemd
+ext2load mmc 0 0x43000000 boot/script.bin
+ext2load mmc 0 0x48000000 boot/uImage
+bootm 0x48000000
+EOF
+    close BOOT;
+    safe_system qw/mkimage -C none -A arm -T script -d/, 
+        "$target/boot/boot.cmd", "$target/boot/boot.scr";
+}
+
 sub fixes {
     rmtree "$target/bin" if -e "$target/bin";
+    #symlink "usr/bin","$target/bin";
     rmtree "$target/sbin" if -e "$target/sbin";
+    #symlink "usr/bin","$target/sbin";
     rmtree "$target/usr/sbin" if -e "$target/usr/sbin";
+    #symlink "bin","$target/usr/sbin";
+    convert_links "$target/usr/lib";
+    #pacman qw/-S xfsprogs/;
 }
 
 sub base {
@@ -109,17 +124,15 @@ sub dev {
 }
 
 sub all {
-    #boot;
+    boot;
     rootfs;
     fixes;
     upgrade;
+    pacnew;
+    uboot;
     base;
     x;
     dev;
-}
-
-sub check {
-    pacman qw(-Qqo /bin /sbin /usr/sbin);
 }
 
 # vim:filetype=perl:

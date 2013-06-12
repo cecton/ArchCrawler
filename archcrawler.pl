@@ -8,19 +8,23 @@ use Getopt::Long;
 use POSIX qw/strftime/;
 use Fcntl ':seek';
 use LWP::UserAgent;
+use File::Spec;
+use Cwd 'realpath';
 use base qw/File::Path File::Copy/;
 
 die "error: this program need to be run as root.\n"
     unless $> == 0;
 
-our @BASE_EXPORT_OK = qw/upgrade all/;
+our @BASE_EXPORT_OK = qw/upgrade all pacnew/;
 our $profile;
 our $list;
 our $device;
 our $target = 'target';
 our $verbose;
+our $debug;
+our @pacman = ('pacman');
 our $arch = `uname -m`;
-my $tmp = "/tmp";
+our $tmp = "/tmp";
 
 our $ua = LWP::UserAgent->new;
 
@@ -47,6 +51,8 @@ Parameters:
         list all existing profiles
     --verbose, -v
         verbose mode
+    --debug
+        activate debug mode
     --help, -h
         this help
 
@@ -118,25 +124,34 @@ sub download {
 
 sub rmtree {
     # TODO: deny access to root filesystem
-    File::Path::rmtree @_, {verbose => $verbose} or die "$!\n";
+    for( map {glob $_} @_ ) {
+        File::Path::rmtree $_, {verbose => $verbose}
+            or die "error: rmtree $_: $!\n";
+    }
 }
 
 sub mkpath {
     # TODO: deny access to root filesystem
-    File::Path::mkpath @_, {verbose => $verbose} or die "$!\n";
+    File::Path::mkpath @_, {verbose => $verbose}
+        or die "error: mkpath @_: $!\n";
 }
 
 sub safe_system {
+    print join(' ', map {
+            if( m/\s/ ) {
+                s/\\/\\\\/g;
+                s/"/\\"/g;
+                "\"$_\"";
+            } else { $_ }
+        } @_)."\n";
     system(@_);
     if( $? == -1 ) {
-        die "failed to execute!\n";
+        confess "failed to execute!";
     } elsif ($? & 127) {
-        printf "child died with signal %d, %s coredump\n",
+        confess sprintf "child died with signal %d, %s coredump",
             ($? & 127),  ($? & 128) ? 'with' : 'without';
-        exit 1;
     } elsif( $? >> 8 != 0 ) {
-        printf "child exited with value %d\n", $? >> 8;
-        exit 1;
+        confess sprintf "child exited with value %d", $? >> 8;
     }
 }
 
@@ -154,7 +169,6 @@ sub decompress {
         push @opts, '-f', $file;
     }
     die "no program found to decompress: $file!\n" unless $cmd;
-    print join(' ', map {s/ /\\ /g;$_} $cmd, @opts),"\n";
     safe_system($cmd,@opts);
 }
 
@@ -217,15 +231,43 @@ sub dd {
     close $out;
 }
 
+sub convert_links {
+    my @dirs = @_;
+    while( my $dir = shift @dirs ) {
+        $dir = realpath $dir;
+        confess "fatal: $dir is not a directory" unless -d $dir;
+        opendir DIR, $dir or die "error: can not open directory $dir: $!\n";
+        while( my $file = readdir DIR ) {
+            next if $file =~ m/^\.\.?$/;
+            $file = "$dir/$file";
+            if( -l $file ) {
+                my $link = $file;
+                my $path = readlink $link;
+                next unless $path =~ s!^/!$target/!;
+                my $rel_path = File::Spec->abs2rel(realpath($path), $dir);
+                print "$rel_path -> $link\n";
+                unlink $link or die "error: can not delete link $link: $!\n";
+                symlink $rel_path, $link
+                    or die "error: can not make symbolic link $link: $!\n";
+            } elsif( -d $file ) {
+                push @dirs, $file
+            }
+        }
+    }
+}
+
 sub generate_pacman_conf {
     return if -f "pacman.conf";
     open IN,"$target/etc/pacman.conf"
         or die "error: can not read $target/etc/pacman.conf: $!\n";
     open OUT,">pacman.conf" or die "error: can not create pacman.conf: $!\n";
     while( <IN> ) {
+        chop;
         s!/etc/pacman\.d/mirrorlist!$target$&!;
-        s/^\s*#// if s!(CacheDir\s*=\s*)(.+?)\s+$!$1cache!;
-        print OUT $_;
+        $_="CacheDir = cache" if /CacheDir/;
+        $_="RootDir = $target" if /RootDir/;
+        $_="DBPath = $target/var/lib/pacman" if /DBPath/;
+        print OUT "$_\n";
     }
     close OUT;
     close IN;
@@ -235,15 +277,33 @@ sub generate_pacman_conf {
 sub pacman {
     generate_pacman_conf;
     safe_system(grep {$_}
-        'pacman','--noconfirm','--arch',$arch,
-        ($verbose ? '--quiet' : undef),
-        '-b',"$target/var/lib/pacman",
-        '-r',$target,
+        @pacman,'--noconfirm',
+        ($debug ? '--debug' : undef),
+        '--noscriptlet',
+        #($verbose ? undef : '--quiet'),
         '--config',"pacman.conf",
         @_)
 }
 
 sub upgrade { pacman('-Syu') }
+
+sub pacnew {
+    my @files = @_ ? @_ : "$target/etc";
+    while( my $file = shift @files ) {
+        if( -f $file and $file =~ s/\.pacnew$// ) {
+            unlink $file;
+            mv "$file.pacnew", $file;
+        } elsif( -d (my $dir = $file) ) {
+            opendir DIR, $dir
+                or die "error: can not open directory $dir: $!\n";
+            while( my $file = readdir DIR ) {
+                next if $file =~ m/^\.\.?$/;
+                $file = "$dir/$file";
+                push @files, $file;
+            }
+        }
+    }
+}
 
 sub mount {
     confess "fatal: no device set" unless $device;
@@ -262,6 +322,7 @@ GetOptions(
         "device|dev|d=s" => \$device,
         "target|t=s" => \$target,
         "verbose|v" => \$verbose,
+        "debug" => \$debug,
         "help|h" => \$help,
     ) or exit 1;
 
@@ -304,6 +365,7 @@ if( $list ) {
 }
 
 for my $p ( @ARGV ) {
+    $p =~ tr/-/_/;
     die "fatal: procedure $p does not exists!\n"
         unless exists &{$p};
     die "fatal: procedure $p not exported!\n"
@@ -313,5 +375,11 @@ for my $p ( @ARGV ) {
 {
     no strict 'refs';
     @ARGV = ('all') unless @ARGV;
-    &{$_} for @ARGV;
+    for( @ARGV ) {
+        tr/-/_/;
+        print "$_:\n";
+        &{$_};
+    }
 }
+
+print "\nprogram ended normally\n";
