@@ -15,8 +15,9 @@ use base qw/File::Path File::Copy/;
 die "error: this program need to be run as root.\n"
     unless $> == 0;
 
-our @BASE_EXPORT_OK = qw/upgrade all pacnew/;
+our @EXPORT_OK = qw/all custom upgrade pacnew/;
 our $profile;
+our $custom;
 our $list;
 our $device;
 our $target = 'target';
@@ -24,6 +25,7 @@ our $verbose;
 our $debug;
 our @pacman = ('pacman');
 our $arch = `uname -m`;
+chop $arch;
 our $tmp = "/tmp";
 
 our $ua = LWP::UserAgent->new;
@@ -36,14 +38,15 @@ ArchCrawler - Arch Deployment script
 Usage: $0
     <--profile=PROFILE|-p PROFILE> [<--list|-l>]
     [<--target TARGET|-t TARGET>] [<--device DEVICE|--dev DEVICE|-d DEVICE>]
-    [<--verbose|-v>] [<--help|-h>]
+    [<--custom CUSTOM|-c CUSTOM>] [<--verbose|-v>] [<--help|-h>]
 
 Arguments:
 
     PROFILE     must be found in profile.d directory in included paths
-    TARGET      target directory (mount point of the root filesystem
+    TARGET      target directory (mount point of the root filesystem)
                 default: ./target
     DEVICE      target device to install the system
+    CUSTOM      must be found in custom.d dir in included paths
 
 Parameters:
 
@@ -63,8 +66,26 @@ EOF
     exit 0
 }
 
-sub human_size
-{
+sub load_script {
+    my($dir,$script) = @_;
+    return unless $script;
+    my $file;
+    foreach( map {"$_/$dir/$script"} @INC ) {
+        next unless -f $_;
+        $file = $_;
+    }
+    die "error: can not find script $dir/$script in ".join(':', @INC)."\n"
+        unless $file;
+    local $/;
+    open SCRIPT,$file or die $!;
+    my $code = <SCRIPT>;
+    close SCRIPT;
+    eval $code;
+    die $@ if $@;
+    undef $@;
+}
+
+sub human_size {
     $_ = shift;
     # TiB: 1024 GiB
     return sprintf("%.2f TiB", $_ / 1099511627776) if $_ > 1099511627776;
@@ -177,9 +198,43 @@ sub cp {
     # TODO: deny access to root filesystem (on destination)
     foreach( map {glob $_} @_ ) {
         my $dest = $dest;
-        $dest .= "/$&" if -d $_ and $dest =~ m/\/$/ and m/[^\/]+$/;
-        print "mv ".join(' ', map {s/ /\\ /g;$_} $_, $dest),"\n";
+        $dest .= $& if -d $dest and $dest =~ m/\/$/ and m/[^\/]+$/;
+        print "cp ".join(' ', map {s/ /\\ /g;$_} $_, $dest),"\n";
         File::Copy::copy($_, $dest) or die $!;
+    }
+}
+
+sub cpR {
+    my $dest = pop;
+    $dest =~ s/\/+$//;
+    # TODO: deny access to root filesystem (on destination)
+    foreach ( map {glob $_} @_ ) {
+        my(@files) = ($_);
+        my $basedir = m!^(.+)/[^/]+$! ? $1 : '';
+        while( my $file = shift @files ) {
+            $_ = $file;
+            s/^$basedir\/?// or confess "fatal: source file $file"
+                ." should start by $basedir!";
+            my $dest = "$dest/$_";
+            if( -f $file ) {
+                cp $file, $dest;
+            } elsif( -d (my $dir = $file) ) {
+                die "error: can not copy a directory to a single file"
+                    if -f $dest;
+                opendir DIR, $dir
+                    or die "error: can not open directory $dir: $!\n";
+                while( my $file = readdir DIR ) {
+                    next if $file =~ m/^\.\.?$/;
+                    $file = "$dir/$file";
+                    push @files, $file;
+                }
+                unless( -d $dest ) {
+                    print "mkdir ".join(' ', map {s/ /\\ /g;$_} $dest),"\n";
+                    mkdir $dest
+                        or die "error: can not make directory $dest: $!";
+                }
+            }
+        }
     }
 }
 
@@ -188,7 +243,8 @@ sub mv {
     # TODO: deny access to root filesystem
     foreach( map {glob $_} @_ ) {
         my $dest = $dest;
-        $dest .= "/$&" if -d $_ and $dest =~ m/\/$/ and m/[^\/]+$/;
+        #$dest .= "/$&" if -d $_ and $dest =~ m/\/$/ and m/[^\/]+$/;
+        $dest .= $& if -d $dest and $dest =~ m/\/$/ and m/[^\/]+$/;
         print "mv ".join(' ', map {s/ /\\ /g;$_} $_, $dest),"\n";
         File::Copy::move($_, $dest) or die $!;
     }
@@ -305,14 +361,19 @@ sub pacnew {
     }
 }
 
-sub mount {
-    confess "fatal: no device set" unless $device;
-    safe_system('mount', @_);
+sub git {
+    safe_system('git', @_);
 }
 
-sub unmount {
+sub mount {
     confess "fatal: no device set" unless $device;
-    safe_system('unmount', @_);
+    mkpath $target;
+    safe_system('mount', $device, $target);
+}
+
+sub umount {
+    confess "fatal: no device set" unless $device;
+    safe_system('unmount', $device);
 }
 
 my $help;
@@ -321,15 +382,15 @@ GetOptions(
         "list|l" => \$list,
         "device|dev|d=s" => \$device,
         "target|t=s" => \$target,
+        "custom|c=s" => \$custom,
         "verbose|v" => \$verbose,
         "debug" => \$debug,
         "help|h" => \$help,
     ) or exit 1;
 
-help if $help or not $profile;
 if( $list ) {
     my %profiles;
-    foreach my $dir ( map {"$_/profiles.d"} @INC ) {
+    foreach my $dir ( map {("$_/profile.d","$_/custom.d")} @INC ) {
         next unless -d $dir;
         opendir DIR, $dir;
         while( $_ = readdir DIR ) {
@@ -345,31 +406,17 @@ if( $list ) {
     print STDERR "error: no profile found\n" unless %profiles;
     exit 0;
 }
+help if $help or not $profile;
 
-{
-    my $file;
-    foreach( map {"$_/profiles.d/$profile"} @INC ) {
-        next unless -f $_;
-        $file = $_;
-    }
-    die "error: can not find profile $profile\n" unless $file;
-    local $/;
-    open PROFILE,$file or die $!;
-    my $code = <PROFILE>;
-    close PROFILE;
-    eval $code;
-    die $@ if $@;
-    undef $@;
-    die "error: no global variable \@EXPORT_OK set\n"
-        unless @main::EXPORT_OK;
-}
+load_script 'profile.d', $profile;
+load_script 'custom.d', $custom;
 
 for my $p ( @ARGV ) {
     $p =~ tr/-/_/;
     die "fatal: procedure $p does not exists!\n"
         unless exists &{$p};
     die "fatal: procedure $p not exported!\n"
-        unless grep {$p eq $_} @main::EXPORT_OK, @BASE_EXPORT_OK;
+        unless grep {$p eq $_} @EXPORT_OK;
 }
 
 {

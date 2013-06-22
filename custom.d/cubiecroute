@@ -1,0 +1,32 @@
+push @EXPORT_OK, qw/netctl x dev cecile/;
+
+sub netctl {
+    pacman qw/-S netctl ifplugd wpa_actiond/;
+    cp "$target/etc/netctl/examples/ethernet-dhcp","$target/etc/netctl/";
+    cpR "rootfs/*","$target/";
+}
+
+sub x {
+    pacman qw/-S xorg-xset xorg-xsetroot xorg-xinit/;
+}
+
+sub dev {
+    pacman qw/-S vim/;
+    pacman qw/-R vi/;
+    ln "vim", "$target/usr/bin/vi";
+}
+
+sub cecile {
+    cpR "cecile","$target/home/";
+    git qw(clone git@github.com:cecton/tmux-statusbar.git), "$target/home/cecile/repos/tmux-statusbar";
+    pacman qw/-S tmux/;
+}
+
+sub custom {
+    netctl;
+    x;
+    dev;
+    cecile;
+}
+
+# vim:filetype=perl:

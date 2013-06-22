@@ -1,4 +1,4 @@
-our @EXPORT_OK = qw/boot restore rootfs fixes base x dev u_boot/;
+push @EXPORT_OK, qw/boot restore rootfs fixes base u_boot/;
 # using qemu seems to be useless... with --debug parameter, the number of
 # failed execv is still the same
 #@pacman = (qw/qemu-arm -E/, "LD_LIBRARY_PATH=$target/usr/lib", "$target/usr/lib/ld-linux.so.3", "$target/usr/bin/pacman") unless $arch =~ m/arm/;
@@ -69,19 +69,12 @@ sub rootfs {
     $kernel = download $files{kernel};
     mkdir $target;
     rmtree "$target/*" if -e $target;
-    if( $device ) {
-        confess "todo: should mount $device";
-        #mount $device, $target;
-    }
     decompress $archlinux, $target;
     convert_links "$target/usr/lib";
-    pacman qw/-R linux-headers-sun4i linux-sun4i mkinitcpio mkinitcpio-busybox uboot-mkimage/;
+    pacman qw/-R linux-headers-sun4i linux-sun4i mkinitcpio mkinitcpio-busybox uboot-mkimage netcfg/;
     ln '.', "$target/rootfs";
     ln 'boot', "$target/kernel";
     decompress $kernel, $target;
-    if( $device ) {
-        #umount $target;
-    }
 }
 
 sub u_boot {
@@ -99,40 +92,29 @@ EOF
 }
 
 sub fixes {
-    rmtree "$target/bin" if -e "$target/bin";
-    #symlink "usr/bin","$target/bin";
-    rmtree "$target/sbin" if -e "$target/sbin";
-    #symlink "usr/bin","$target/sbin";
-    rmtree "$target/usr/sbin" if -e "$target/usr/sbin";
-    #symlink "bin","$target/usr/sbin";
+    rmtree "$target/bin" if -d "$target/bin";
+    rmtree "$target/sbin" if -d "$target/sbin";
+    rmtree "$target/usr/sbin" if -d "$target/usr/sbin";
+    rmtree "$target/etc/network.d" if -d "$target/etc/network.d";
     convert_links "$target/usr/lib";
-    #pacman qw/-S xfsprogs/;
 }
 
 sub base {
     pacman qw/-S pulseaudio pulseaudio-alsa/;
 }
 
-sub x {
-    pacman qw/-S pulseaudio pulseaudio-alsa xorg-xset xorg-xsetroot xorg-xinit/;
-}
-
-sub dev {
-    pacman qw/-S vim/;
-    pacman qw/-R vi/;
-    ln "vim", "$target/usr/bin/vi";
-}
-
 sub all {
-    boot;
+    if( $device ) {
+        boot;
+        mount;
+    }
     rootfs;
     fixes;
     upgrade;
     pacnew;
-    uboot;
+    u_boot;
     base;
-    x;
-    dev;
+    umount if $device;
 }
 
 # vim:filetype=perl:
