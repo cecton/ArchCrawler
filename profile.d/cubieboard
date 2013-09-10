@@ -1,4 +1,4 @@
-push @EXPORT_OK, qw/boot restore rootfs fixes base u_boot/;
+push @EXPORT_OK, qw/boot restore rootfs fixes base u_boot rootssh/;
 # using qemu seems to be useless... with --debug parameter, the number of
 # failed execv is still the same
 #@pacman = (qw/qemu-arm -E/, "LD_LIBRARY_PATH=$target/usr/lib", "$target/usr/lib/ld-linux.so.3", "$target/usr/bin/pacman") unless $arch =~ m/arm/;
@@ -8,11 +8,13 @@ my %files = (
         archlinux => "http://archlinuxarm.org/os/ArchLinuxARM-sun4i-latest.tar.gz",
         kernel => "http://dl.linux-sunxi.org/users/amery/sunxi-3.0/latest/cubieboard_hwpack.tar.xz",
         bootloader => "http://archlinuxarm.org/os/sun4i/cubieboard-bootloader.tar.gz",
+        a10_display => "https://raw.github.com/mortaromarcello/a10-display/master/a10_display.c",
     );
 
 my $bootloader;
 my $archlinux;
 my $kernel;
+my $a10_display;
 
 sub boot {
     die "error: make device bootable needs a path to a device" unless $device;
@@ -71,7 +73,7 @@ sub rootfs {
     rmtree "$target/*" if -e $target;
     decompress $archlinux, $target;
     convert_links "$target/usr/lib";
-    pacman qw/-R linux-headers-sun4i linux-sun4i mkinitcpio mkinitcpio-busybox uboot-mkimage netcfg/;
+    pacman qw/-R linux-headers-sun4i linux-sun4i mkinitcpio mkinitcpio-busybox uboot-mkimage netcfg openntpd/;
     ln '.', "$target/rootfs";
     ln 'boot', "$target/kernel";
     decompress $kernel, $target;
@@ -100,21 +102,53 @@ sub fixes {
 }
 
 sub base {
+    $a10_display = download $files{a10_display};
+    cp $a10_display, "$target/root/";
+    pacman qw/-S fbset/;
     pacman qw/-S pulseaudio pulseaudio-alsa/;
+    pacman qw/-S netctl ifplugd wpa_actiond openntpd/;
+    pacman qw/-S gcc fakeroot make pkg-config autoconf automake/;
+    cp "$target/etc/netctl/examples/ethernet-dhcp", "$target/etc/netctl/";
+    ln '/usr/lib/systemd/system/netctl-ifplugd@.service', $target.'/etc/systemd/system/multi-user.target.wants/netctl-ifplugd@eth0.service';
+    ln '/usr/lib/systemd/system/netctl-auto@.service', $target.'/etc/systemd/system/multi-user.target.wants/netctl-auto@wlan0.service';
+    #ln '../netctl@ethernet\x2ddhcp.service', $target.'/etc/systemd/system/multi-user.target.wants/netctl@ethernet\x2ddhcp.service';
+}
+
+sub rootssh {
+    unless( $sshkey) {
+        warn "warning: missing ssh public key file, ssh step skipped\n";
+        return
+    }
+    mkdir "$target/root/.ssh", 0700;
+    open KEYPUB,$sshkey;
+    my $public_key = <KEYPUB>;
+    print "ssh public key used:\n$public_key";
+    my $authorized_keys = "$target/root/.ssh/authorized_keys";
+    my $mode = -f $authorized_keys ? '+<' : '+>';
+    open AUTHORIZED_KEYS,$mode,$authorized_keys
+        or die "error: $authorized_keys: $!\n";
+    chmod 0600, $authorized_keys;
+    my $key_exists = 0;
+    $key_exists |= $_ eq $public_key while <AUTHORIZED_KEYS>;
+    if( $key_exists ) {
+        warn "info: key already present in the file, ignored\n";
+        return
+    }
+    print AUTHORIZED_KEYS $public_key;
 }
 
 sub all {
-    if( $device ) {
-        boot;
-        mount;
-    }
+    boot if $device;
+    mount if $partition;
     rootfs;
+    hostname if $hostname;
     fixes;
     upgrade;
     pacnew;
     u_boot;
     base;
-    umount if $device;
+    rootssh;
+    umount if $partition;
 }
 
 # vim:filetype=perl:

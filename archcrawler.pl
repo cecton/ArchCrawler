@@ -15,11 +15,12 @@ use base qw/File::Path File::Copy/;
 die "error: this program need to be run as root.\n"
     unless $> == 0;
 
-our @EXPORT_OK = qw/all custom upgrade pacnew/;
+our @EXPORT_OK = qw/all custom upgrade pacnew mount umount hostname/;
 our $profile;
 our $custom;
 our $list;
 our $device;
+our $partition;
 our $target = 'target';
 our $verbose;
 our $debug;
@@ -27,6 +28,8 @@ our @pacman = ('pacman');
 our $arch = `uname -m`;
 chop $arch;
 our $tmp = "/tmp";
+our $sshkey;
+our $hostname;
 
 our $ua = LWP::UserAgent->new;
 
@@ -37,8 +40,10 @@ ArchCrawler - Arch Deployment script
 
 Usage: $0
     <--profile=PROFILE|-p PROFILE> [<--list|-l>]
-    [<--target TARGET|-t TARGET>] [<--device DEVICE|--dev DEVICE|-d DEVICE>]
-    [<--custom CUSTOM|-c CUSTOM>] [<--verbose|-v>] [<--help|-h>]
+    [<--target TARGET|-t TARGET>] [<--hostname HOSTNAME>]
+    [<--device DEVICE|--dev DEVICE|-d DEVICE>] [<--partition|--part PARTITION>]
+    [<--ssh-key PUBLIC_KEY>] [<--custom CUSTOM|-c CUSTOM>]
+    [<--verbose|-v>] [<--help|-h>]
 
 Arguments:
 
@@ -46,6 +51,11 @@ Arguments:
     TARGET      target directory (mount point of the root filesystem)
                 default: ./target
     DEVICE      target device to install the system
+                example: /dev/sdb
+    PARTITION   target partition to install the system
+                example: 1 (which means /dev/sdb1 if DEVICE is /dev/sdb)
+    HOSTNAME    hostname
+    PUBLIC_KEY  public key file to use for ssh authorized keys
     CUSTOM      must be found in custom.d dir in included paths
 
 Parameters:
@@ -81,7 +91,7 @@ sub load_script {
     my $code = <SCRIPT>;
     close SCRIPT;
     eval $code;
-    die $@ if $@;
+    die "fatal: can not load `$file': ", $@ if $@;
     undef $@;
 }
 
@@ -153,8 +163,8 @@ sub rmtree {
 
 sub mkpath {
     # TODO: deny access to root filesystem
-    File::Path::mkpath @_, {verbose => $verbose}
-        or die "error: mkpath @_: $!\n";
+    File::Path::mkpath @_, {verbose => $verbose};
+    die "error: mkpath @_: directory does not exist!\n" if grep {not -e} @_;
 }
 
 sub safe_system {
@@ -208,7 +218,7 @@ sub cpR {
     my $dest = pop;
     $dest =~ s/\/+$//;
     # TODO: deny access to root filesystem (on destination)
-    foreach ( map {glob $_} @_ ) {
+    foreach( map {glob $_} @_ ) {
         my(@files) = ($_);
         my $basedir = m!^(.+)/[^/]+$! ? $1 : '';
         while( my $file = shift @files ) {
@@ -238,6 +248,27 @@ sub cpR {
     }
 }
 
+sub chmodR {
+    my $mode = shift;
+    my @files = map {glob $_} @_;
+    while( my $file = shift @files ) {
+        my $mode = $mode;
+        if( -d (my $dir = $file) ) {
+            # read => execute
+            $mode |= ($mode & 0444) >> 2;
+            opendir DIR, $dir
+                or die "error: can not open directory $dir: $!\n";
+            while( my $file = readdir DIR ) {
+                next if $file =~ m/^\.\.?$/;
+                $file = "$dir/$file";
+                push @files, $file;
+            }
+        }
+        printf "chmod %o %s\n", $mode, $file;
+        chmod $mode, $file;
+    }
+}
+
 sub mv {
     my $dest = pop;
     # TODO: deny access to root filesystem
@@ -245,13 +276,15 @@ sub mv {
         my $dest = $dest;
         #$dest .= "/$&" if -d $_ and $dest =~ m/\/$/ and m/[^\/]+$/;
         $dest .= $& if -d $dest and $dest =~ m/\/$/ and m/[^\/]+$/;
-        print "mv ".join(' ', map {s/ /\\ /g;$_} $_, $dest),"\n";
+        print "mv ".join(' ', map {s/ /\\ /g;$_} $_, $dest)."\n";
         File::Copy::move($_, $dest) or die $!;
     }
 }
 
 sub ln {
-    symlink $_[0], $_[1] or die "error: can not link $_[0] to $_[1]\n";
+    my($target,$link) = @_;
+    print "ln -s ".join(' ', map {s/ /\\ /g;$_} $target, $link)."\n";
+    symlink $_[0], $_[1] or die "error: can not link $_[0] to $_[1]: $!\n";
 }
 
 sub dd {
@@ -269,6 +302,7 @@ sub dd {
     seek $in,$o{skip},SEEK_SET;
     seek $out,$o{seek},SEEK_SET;
 
+    my $count = 0;
     my $size = $o{bs};
     my $buf;
     while( not eof $in and (not defined $o{limit} or tell $out < $o{limit}) ) {
@@ -281,7 +315,9 @@ sub dd {
         }
         read $in,$buf,$size;
         print $out $buf;
+        $count += $size;
     }
+    print "$o{if}: $count bytes copied into $o{of} at $o{seek}\n";
 
     close $in;
     close $out;
@@ -366,14 +402,25 @@ sub git {
 }
 
 sub mount {
+    my $device = $device.$partition;
     confess "fatal: no device set" unless $device;
     mkpath $target;
     safe_system('mount', $device, $target);
 }
 
 sub umount {
+    my $device = $device.$partition;
     confess "fatal: no device set" unless $device;
-    safe_system('unmount', $device);
+    safe_system('umount', $device);
+}
+
+sub hostname {
+    confess "fatal: no hostname set" unless $hostname;
+    open HOSTNAME,'>',"$target/etc/hostname"
+        or die "error: can not open hostname file: $!\n";
+    print HOSTNAME "$hostname\n";
+    close HOSTNAME;
+    print "hostname set to $hostname ...\n";
 }
 
 my $help;
@@ -381,8 +428,11 @@ GetOptions(
         "profile|p=s" => \$profile,
         "list|l" => \$list,
         "device|dev|d=s" => \$device,
+        "partition|part=s" => \$partition,
         "target|t=s" => \$target,
         "custom|c=s" => \$custom,
+        "ssh-key=s" => \$sshkey,
+        "hostname=s" => \$hostname,
         "verbose|v" => \$verbose,
         "debug" => \$debug,
         "help|h" => \$help,
@@ -406,7 +456,7 @@ if( $list ) {
     print STDERR "error: no profile found\n" unless %profiles;
     exit 0;
 }
-help if $help or not $profile;
+help if $help or not $profile or ($partition and not $device);
 
 load_script 'profile.d', $profile;
 load_script 'custom.d', $custom;

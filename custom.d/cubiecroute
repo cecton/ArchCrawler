@@ -1,32 +1,49 @@
-push @EXPORT_OK, qw/netctl x dev cecile/;
+push @EXPORT_OK, qw/network xorg dev cecile/;
 
-sub netctl {
-    pacman qw/-S netctl ifplugd wpa_actiond/;
-    cp "$target/etc/netctl/examples/ethernet-dhcp","$target/etc/netctl/";
-    cpR "rootfs/*","$target/";
+$hostname ||= 'cubiecroute';
+
+sub network {
+    warn "warning: can not find directory 'netctl' in the current directory\n"
+        unless -d "netctl";
+    cpR "netctl","$target/etc/";
 }
 
-sub x {
-    pacman qw/-S xorg-xset xorg-xsetroot xorg-xinit/;
+sub xorg {
+    pacman qw/-S xorg-server xf86-video-fbdev xorg-xinit libxft libxinerama/;
+    pacman qw/-S xorg-xset xorg-xsetroot xsel/;
 }
 
 sub dev {
-    pacman qw/-S vim/;
     pacman qw/-R vi/;
+    pacman qw/-S vim git/;
     ln "vim", "$target/usr/bin/vi";
 }
 
 sub cecile {
+    pacman qw/-S tmux surf firefox imagemagick/;
     cpR "cecile","$target/home/";
-    git qw(clone git@github.com:cecton/tmux-statusbar.git), "$target/home/cecile/repos/tmux-statusbar";
-    pacman qw/-S tmux/;
+    git qw(clone git@github.com:cecton/tmux-statusbar.git), "$target/home/cecile/repos/tmux-statusbar" unless -e "$target/home/cecile/repos/tmux-statusbar";
+    chmodR 0644, "$target/home/cecile";
+    chmodR 0600, "$target/home/cecile/.ssh";
+}
+
+sub conkeror {
+    pacman qw/-S xulrunner desktop-file-utils/;
+}
+
+sub sunxifb {
+    pacman qw/-S xorg-server-devel libtool/;
 }
 
 sub custom {
-    netctl;
-    x;
+    mount if $partition;
+    network;
+    xorg;
     dev;
     cecile;
+    conkeror;
+    sunxifb;
+    umount if $partition;
 }
 
 # vim:filetype=perl:
