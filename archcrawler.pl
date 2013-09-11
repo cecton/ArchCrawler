@@ -269,6 +269,25 @@ sub chmodR {
     }
 }
 
+sub chownR {
+    my $uid = shift;
+    my $gid = shift;
+    my @files = map {glob $_} @_;
+    while( my $file = shift @files ) {
+        if( -d (my $dir = $file) ) {
+            opendir DIR, $dir
+                or die "error: can not open directory $dir: $!\n";
+            while( my $file = readdir DIR ) {
+                next if $file =~ m/^\.\.?$/;
+                $file = "$dir/$file";
+                push @files, $file;
+            }
+        }
+        printf "chown %d:%d %s\n", $uid, $gid, $file;
+        chown $uid, $gid, $file;
+    }
+}
+
 sub mv {
     my $dest = pop;
     # TODO: deny access to root filesystem

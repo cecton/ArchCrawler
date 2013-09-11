@@ -105,9 +105,9 @@ sub base {
     $a10_display = download $files{a10_display};
     cp $a10_display, "$target/root/";
     pacman qw/-S fbset/;
-    pacman qw/-S pulseaudio pulseaudio-alsa/;
+    pacman qw/-S pulseaudio pulseaudio-alsa alsa-utils/;
     pacman qw/-S netctl ifplugd wpa_actiond openntpd/;
-    pacman qw/-S gcc fakeroot make pkg-config autoconf automake/;
+    pacman qw/-S gcc fakeroot make pkg-config autoconf automake diffutils patch/;
     cp "$target/etc/netctl/examples/ethernet-dhcp", "$target/etc/netctl/";
     ln '/usr/lib/systemd/system/netctl-ifplugd@.service', $target.'/etc/systemd/system/multi-user.target.wants/netctl-ifplugd@eth0.service';
     ln '/usr/lib/systemd/system/netctl-auto@.service', $target.'/etc/systemd/system/multi-user.target.wants/netctl-auto@wlan0.service';

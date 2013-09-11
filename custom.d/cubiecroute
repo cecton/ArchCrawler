@@ -20,9 +20,10 @@ sub dev {
 }
 
 sub cecile {
-    pacman qw/-S tmux surf firefox imagemagick/;
+    pacman qw/-S tmux htop rlwrap mlocate surf imagemagick/;
     cpR "cecile","$target/home/";
     git qw(clone git@github.com:cecton/tmux-statusbar.git), "$target/home/cecile/repos/tmux-statusbar" unless -e "$target/home/cecile/repos/tmux-statusbar";
+    chownR 1000, 100, "$target/home/cecile";
     chmodR 0644, "$target/home/cecile";
     chmodR 0600, "$target/home/cecile/.ssh";
 }
@@ -33,6 +34,14 @@ sub conkeror {
 
 sub sunxifb {
     pacman qw/-S xorg-server-devel libtool/;
+}
+
+sub genesis {
+    pacman qw/-S dgen-sdl/;
+}
+
+sub gmediarender {
+    pacman qw/-S libupnp gstreamer0.10 gstreamer0.10-good gstreamer0.10-bad gstreamer0.10-ugly/;
 }
 
 sub custom {
